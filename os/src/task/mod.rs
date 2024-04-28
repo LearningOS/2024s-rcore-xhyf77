@@ -13,10 +13,11 @@ mod context;
 mod switch;
 #[allow(clippy::module_inception)]
 mod task;
-
+use crate::config::MAX_SYSCALL_NUM;
 use crate::config::MAX_APP_NUM;
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_ms;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
@@ -54,6 +55,8 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
+            first_run: 0 ,
+            syscall_times : [0;MAX_SYSCALL_NUM] , 
         }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
@@ -85,6 +88,10 @@ impl TaskManager {
         let mut _unused = TaskContext::zero_init();
         // before this, we should drop local variables that must be dropped manually
         unsafe {
+            let mut inner = self.inner.exclusive_access();
+            let ct = inner.current_task;
+            inner.tasks[ct].first_run = get_time_ms();
+            drop(inner);
             __switch(&mut _unused as *mut TaskContext, next_task_cx_ptr);
         }
         panic!("unreachable in run_first_task!");
@@ -123,6 +130,9 @@ impl TaskManager {
             let current = inner.current_task;
             inner.tasks[next].task_status = TaskStatus::Running;
             inner.current_task = next;
+            if inner.tasks[next].first_run == 0 {
+                inner.tasks[next].first_run = get_time_ms();
+            }
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
             drop(inner);
@@ -135,6 +145,30 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+    /// syscall_add_times
+    pub fn syscall_add_times(&self , sys_call_id : usize ) {
+        let mut inner = self.inner.exclusive_access();
+        let ct = inner.current_task;
+        inner.tasks[ct].syscall_times[sys_call_id] += 1;
+        drop(inner);
+    }
+    ///get_first_runtime
+    pub fn get_first_runtime(&self ) -> usize {
+        let inner = self.inner.exclusive_access();
+        let ct = inner.current_task;
+        let x = inner.tasks[ct].first_run;
+        drop(inner);
+        x
+    }
+    ///get_syscall_times
+    pub fn get_syscall_times(&self ) -> [u32;MAX_SYSCALL_NUM] {
+        let inner = self.inner.exclusive_access();
+        let ct = inner.current_task;
+        let x = inner.tasks[ct].syscall_times;
+        drop(inner);
+        x
+    }
+
 }
 
 /// Run the first task in task list.
