@@ -16,7 +16,7 @@
 //! userspace.
 
 #![deny(missing_docs)]
-#![deny(warnings)]
+//#![deny(warnings)]
 #![no_std]
 #![no_main]
 #![feature(panic_info_message)]
@@ -108,3 +108,4 @@ pub fn rust_main() -> ! {
     task::run_first_task();
     panic!("Unreachable in rust_main!");
 }
+

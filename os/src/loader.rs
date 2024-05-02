@@ -1,5 +1,7 @@
 //! Loading user applications into memory
 
+use core::num;
+
 /// Get the total number of applications.
 pub fn get_num_app() -> usize {
     extern "C" {

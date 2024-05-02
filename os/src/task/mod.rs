@@ -13,17 +13,18 @@ mod context;
 mod switch;
 #[allow(clippy::module_inception)]
 mod task;
-
+use crate::mm::{VirtPageNum,VirtAddr};
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::MapPermission;
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
-
 pub use context::TaskContext;
-
+use crate::config::MAX_SYSCALL_NUM;
+use crate::timer::get_time_ms;
 /// The task manager, where all the tasks are managed.
 ///
 /// Functions implemented on `TaskManager` deals with all task state transitions
@@ -84,6 +85,10 @@ impl TaskManager {
         let mut _unused = TaskContext::zero_init();
         // before this, we should drop local variables that must be dropped manually
         unsafe {
+            let mut inner = self.inner.exclusive_access();
+            let ct = inner.current_task;
+            inner.tasks[ct].first_run = get_time_ms();
+            drop(inner);
             __switch(&mut _unused as *mut _, next_task_cx_ptr);
         }
         panic!("unreachable in run_first_task!");
@@ -132,6 +137,37 @@ impl TaskManager {
         let cur = inner.current_task;
         inner.tasks[cur].change_program_brk(size)
     }
+    ///
+    pub fn create_alloc(&self , start: usize, len: usize, port: usize ) -> i32{
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let mut permission = MapPermission::U;
+        if port & 0b1 != 0 {
+            permission |= MapPermission::R;
+        }
+        if port & 0b10 != 0 {
+            permission |= MapPermission::W;
+        }
+        if port & 0b100 != 0 {
+            permission |= MapPermission::X;
+        }
+        inner.tasks[current].memory_set.insert_framed_area( start.into() , (start + len).into() , permission );
+        1
+    }
+    ///
+    pub fn unmapp(&self , start: VirtAddr, end : VirtAddr ) -> i32{
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+
+        let svppn : VirtPageNum = start.floor();
+        let evppn_num : usize = end.ceil().0;
+        let evppn :VirtPageNum = evppn_num.into();
+        for vpn in svppn.0..evppn.0{
+            inner.tasks[current].memory_set.page_table.unmap( vpn.into() );
+        }
+
+        1
+    }
 
     /// Switch current `Running` task to the task we have found,
     /// or there is no `Ready` task and we can exit with all applications completed
@@ -146,6 +182,13 @@ impl TaskManager {
             drop(inner);
             // before this, we should drop local variables that must be dropped manually
             unsafe {
+                let mut inner = self.inner.exclusive_access();
+                inner.tasks[next].task_status = TaskStatus::Running;
+                inner.current_task = next;
+                if inner.tasks[next].first_run == 0 {
+                    inner.tasks[next].first_run = get_time_ms();
+                }
+                drop(inner);
                 __switch(current_task_cx_ptr, next_task_cx_ptr);
             }
             // go back to user mode
@@ -153,6 +196,31 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+///
+    pub fn syscall_add_times(&self , sys_call_id : usize ) {
+        let mut inner = self.inner.exclusive_access();
+        let ct = inner.current_task;
+        inner.tasks[ct].syscall_times[sys_call_id] += 1;
+        drop(inner);
+    }
+    ///get_first_runtime
+    pub fn get_first_runtime(&self ) -> usize {
+        let inner = self.inner.exclusive_access();
+        let ct = inner.current_task;
+        let x = inner.tasks[ct].first_run;
+        drop(inner);
+        x
+    }
+    ///get_syscall_times
+    pub fn get_syscall_times(&self ) -> [u32;MAX_SYSCALL_NUM] {
+        let inner = self.inner.exclusive_access();
+        let ct = inner.current_task;
+        let x = inner.tasks[ct].syscall_times;
+        drop(inner);
+        x
+    }
+
+    
 }
 
 /// Run the first task in task list.
