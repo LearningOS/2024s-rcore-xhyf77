@@ -4,7 +4,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
-
+use crate::mm::VPNRange;
 bitflags! {
     /// page table entry flags
     pub struct PTEFlags: u8 {
@@ -66,8 +66,10 @@ impl PageTableEntry {
 
 /// page table structure
 pub struct PageTable {
-    root_ppn: PhysPageNum,
-    frames: Vec<FrameTracker>,
+    ///
+    pub root_ppn: PhysPageNum,
+    ///
+    pub frames: Vec<FrameTracker>,
 }
 
 /// Assume that it won't oom when creating/mapping.
@@ -108,7 +110,7 @@ impl PageTable {
         result
     }
     /// Find PageTableEntry by VirtPageNum
-    fn find_pte(&self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
+    pub fn find_pte(&self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
         let idxs = vpn.indexes();
         let mut ppn = self.root_ppn;
         let mut result: Option<&mut PageTableEntry> = None;
@@ -124,6 +126,29 @@ impl PageTable {
             ppn = pte.ppn();
         }
         result
+    }
+
+    pub fn if_has_mapped( &self , start : VirtAddr , end : VirtAddr ) -> ( i32 , i32 ) {
+        let mut if_all_unmapp = 1;
+        let mut if_all_mapped = 1;
+        let svppn : VirtPageNum = start.floor();
+        let evppn_num : usize = end.ceil().0 ;
+        let evppn :VirtPageNum = evppn_num.into();
+        let vpn_range = VPNRange::new( svppn, evppn ).into_iter();
+        for vpn in vpn_range {
+            if let Some(x) = self.find_pte(vpn){
+                if x.is_valid(){
+                    if_all_unmapp = -1;
+                }
+                else {
+                    if_all_mapped = -1;
+                }
+            }
+            else{
+                if_all_mapped = -1;
+            }
+        }
+        return ( if_all_mapped , if_all_unmapp )
     }
     /// set the map between virtual page number and physical page number
     #[allow(unused)]

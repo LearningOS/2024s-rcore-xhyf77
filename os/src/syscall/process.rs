@@ -1,6 +1,7 @@
 //! Process management syscalls
 use alloc::sync::Arc;
-
+use crate::task::PROCESSOR;
+use crate::timer::get_time_ms;
 use crate::{
     config::MAX_SYSCALL_NUM,
     loader::get_app_data_by_name,
@@ -113,45 +114,123 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
     }
     // ---- release current PCB automatically
 }
-
+use crate::mm::{ VirtAddr , PhysAddr };
+use crate::mm::PageTable;
+use crate::timer::get_time_us;
+use alloc::vec;
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
 pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
-}
+     let ptr1:VirtAddr = (_ts as usize).into();
+     let ptr2:VirtAddr = (_ts as usize + 8).into();
+     let ux = get_time_us();
+     let sx = ux / 1000000;
+     let pt = current_user_token();
+     let page_table = PageTable {
+         root_ppn: pt.into(),
+         frames:vec![]
+     };
+     let pgaddr1: PhysAddr = page_table.find_pte( ptr1.floor()).unwrap().ppn().into();
+     let pgaddr2: PhysAddr = page_table.find_pte( ptr2.floor()).unwrap().ppn().into();
+     let ptr11 = ( pgaddr1.0 + ( _ts as usize & 0xfff ) ) as *mut usize;
+     let ptr22 = ( pgaddr2.0 + ( (_ts as usize + 8 ) & 0xfff ) ) as *mut usize;
+     unsafe{
+         *ptr11 = sx;
+         *ptr22 = ux;
+     }
+     0
+ }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_task_info NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    let process = PROCESSOR.exclusive_access();
+    let t = get_time_ms();
+    let ti_r = unsafe { _ti.as_mut().unwrap() }; 
+    let time = t - process.get_first_runtime();
+    let syscall_times = process.get_syscall_times();
+
+    drop(process);
+
+    let status = TaskStatus::Running;
+
+    let ptr1:VirtAddr = (&ti_r.time as *const usize as usize).into();
+    let ptr2:VirtAddr = (&ti_r.syscall_times as *const _ as usize).into();
+    let ptr3:VirtAddr = (&ti_r.status as *const _ as usize).into();
+
+    let pt = current_user_token();
+    let page_table = PageTable {
+        root_ppn: pt.into(),
+        frames:vec![]
+    };
+
+    let pgaddr1: PhysAddr = page_table.find_pte( ptr1.floor()).unwrap().ppn().into();
+    let pgaddr2: PhysAddr = page_table.find_pte( ptr2.floor()).unwrap().ppn().into();
+    let pgaddr3: PhysAddr = page_table.find_pte( ptr3.floor()).unwrap().ppn().into();
+
+    let ptr11 = ( pgaddr1.0 + ( (&ti_r.time as *const usize as usize) & 0xfff ) ) as *mut usize;
+    let ptr22 = ( pgaddr2.0 + ( (&ti_r.syscall_times as *const _ as usize) & 0xfff ) ) as *mut u32 as *mut [u32;500];
+    let ptr33 = ( pgaddr3.0 + ( (&ti_r.status as *const _ as usize) & 0xfff ) ) as *mut TaskStatus;
+    unsafe{
+        *ptr11 = time;
+        *ptr22 = syscall_times;
+        *ptr33 = status;
+    }
+    0
 }
 
 /// YOUR JOB: Implement mmap.
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    //println!("---------------------------------------------------" );
+    let svirtaddr : VirtAddr = _start.into();
+    if svirtaddr.page_offset() != 0 || _port & !0x7 !=0 || _port & 0x7 == 0 {
+        return -1;
+    }
+
+    let evirtaddr : VirtAddr = (_start + _len).into();
+    let pt = current_user_token();
+
+    let page_table = PageTable {
+        root_ppn: pt.into(),
+        frames:vec![]
+    };
+
+    let ( _all_mapp , all_unmapp) = page_table.if_has_mapped( svirtaddr , evirtaddr );
+    if all_unmapp == -1 {
+        return -1;
+    }
+    let processor = PROCESSOR.exclusive_access();
+    processor.create_alloc(_start, _len, _port);
+    
+    drop(processor);
+    0
 }
 
-/// YOUR JOB: Implement munmap.
+// YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    let svirtaddr : VirtAddr = _start.into();
+    if svirtaddr.page_offset() != 0 {
+        return -1;
+    }
+
+    let evirtaddr : VirtAddr = (_start + _len).into();
+    let pt = current_user_token();
+    let page_table = PageTable {
+        root_ppn: pt.into(),
+        frames:vec![]
+    };
+
+    let ( all_mapp , _all_unmapp) = page_table.if_has_mapped( svirtaddr , evirtaddr );
+    if all_mapp == -1 {
+        return -1;
+    }
+    let processor = PROCESSOR.exclusive_access();
+    processor.unmapp(svirtaddr, evirtaddr );
+    
+    drop(processor);
+    0
 }
 
 /// change data segment size
@@ -163,22 +242,34 @@ pub fn sys_sbrk(size: i32) -> isize {
         -1
     }
 }
-
+use crate::task::TaskControlBlock;
 /// YOUR JOB: Implement spawn.
 /// HINT: fork + exec =/= spawn
-pub fn sys_spawn(_path: *const u8) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+pub fn sys_spawn( path: *const u8) -> isize {
+    let token = current_user_token();
+    let path = translated_str(token, path);
+    println!("{}" , path );
+    if let Some(data) = get_app_data_by_name(path.as_str()) {
+        let childtask = Arc::new(TaskControlBlock::new(data));
+        let parenttask = current_task().unwrap();
+        let mut parent_inner = parenttask.inner_exclusive_access();
+        let mut child_inner = childtask.inner_exclusive_access();
+        child_inner.parent = Some(Arc::downgrade(&parenttask));
+        parent_inner.children.push(childtask.clone());
+        add_task(childtask.clone());
+        return  childtask.getpid() as isize;
+    } else {
+        -1
+    }
 }
 
 // YOUR JOB: Set task priority.
-pub fn sys_set_priority(_prio: isize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+pub fn sys_set_priority( prio: isize) -> isize {
+    if prio < 2 {
+        return -1;
+    }
+    let processor = PROCESSOR.exclusive_access();
+    let x = processor.current().unwrap();
+    x.inner_exclusive_access().priority = prio;
+    prio
 }
