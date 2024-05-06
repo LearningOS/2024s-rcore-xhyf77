@@ -3,15 +3,15 @@
 //! Here, the continuous operation of user apps in CPU is maintained,
 //! the current running state of CPU is recorded,
 //! and the replacement and transfer of control flow of different applications are executed.
-
-use super::__switch;
+use crate::timer::get_time_ms;
 use super::{fetch_task, TaskStatus};
 use super::{TaskContext, TaskControlBlock};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::sync::Arc;
 use lazy_static::*;
-
+use crate::mm::MapPermission;
+use crate::task::switch::__switch;
 /// Processor management structure
 pub struct Processor {
     ///The task currently executing on the current processor
@@ -20,7 +20,9 @@ pub struct Processor {
     ///The basic control flow of each core, helping to select and switch process
     idle_task_cx: TaskContext,
 }
-
+use crate::config::MAX_SYSCALL_NUM;
+use crate::mm::VirtAddr;
+use crate::mm::VirtPageNum;
 impl Processor {
     ///Create an empty Processor
     pub fn new() -> Self {
@@ -28,6 +30,58 @@ impl Processor {
             current: None,
             idle_task_cx: TaskContext::zero_init(),
         }
+    }
+    pub fn create_alloc(&self , start: usize, len: usize, port: usize ) -> i32{
+        let tcb = self.current().unwrap();
+        let mut inner = tcb.inner_exclusive_access();
+        let mut permission = MapPermission::U;
+        if port & 0b1 != 0 {
+            permission |= MapPermission::R;
+        }
+        if port & 0b10 != 0 {
+            permission |= MapPermission::W;
+        }
+        if port & 0b100 != 0 {
+            permission |= MapPermission::X;
+        }
+        inner.memory_set.insert_framed_area( start.into() , (start + len).into() , permission );
+        1
+    }
+    ///
+    pub fn unmapp(&self , start: VirtAddr, end : VirtAddr ) -> i32{
+        let tcb = self.current().unwrap();
+        let mut inner = tcb.inner_exclusive_access();
+        let svppn : VirtPageNum = start.floor();
+        let evppn_num : usize = end.ceil().0;
+        let evppn :VirtPageNum = evppn_num.into();
+        for vpn in svppn.0..evppn.0{
+            inner.memory_set.page_table.unmap( vpn.into() );
+        }
+
+        1
+    }
+
+    pub fn syscall_add_times(&self , sys_call_id : usize ) {
+        let tcb = self.current().unwrap();
+        let mut inner = tcb.inner_exclusive_access();
+        inner.syscall_times[sys_call_id] += 1;
+        drop(inner);
+    }
+
+    pub fn get_first_runtime(&self ) -> usize {
+        let tcb = self.current().unwrap();
+        let inner = tcb.inner_exclusive_access();
+        let x = inner.first_run;
+        drop(inner);
+        x
+    }
+    ///get_syscall_times
+    pub fn get_syscall_times(&self ) -> [u32;MAX_SYSCALL_NUM] {
+        let tcb = self.current().unwrap();
+        let inner = tcb.inner_exclusive_access();
+        let x = inner.syscall_times;
+        drop(inner);
+        x
     }
 
     ///Get mutable reference to `idle_task_cx`
@@ -61,6 +115,9 @@ pub fn run_tasks() {
             let mut task_inner = task.inner_exclusive_access();
             let next_task_cx_ptr = &task_inner.task_cx as *const TaskContext;
             task_inner.task_status = TaskStatus::Running;
+            if task_inner.first_run == 0 {
+                task_inner.first_run = get_time_ms();
+            }
             // release coming task_inner manually
             drop(task_inner);
             // release coming task TCB manually

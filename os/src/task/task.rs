@@ -10,7 +10,7 @@ use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefMut;
-
+use crate::config::MAX_SYSCALL_NUM;
 /// Task control block structure
 ///
 /// Directly save the contents that will not change during running
@@ -71,6 +71,14 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+    ///
+    pub first_run : usize , 
+    ///
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
+    ///
+    pub priority : isize ,
+    ///
+    pub stride : isize ,  
 }
 
 impl TaskControlBlockInner {
@@ -135,6 +143,10 @@ impl TaskControlBlock {
                     ],
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    first_run: 0 ,
+                    syscall_times : [0;MAX_SYSCALL_NUM] , 
+                    stride : 0 ,
+                    priority : 16 ,
                 })
             },
         };
@@ -216,6 +228,10 @@ impl TaskControlBlock {
                     fd_table: new_fd_table,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    first_run : 0 ,
+                    syscall_times : [ 0 ;MAX_SYSCALL_NUM] ,
+                    stride : 0 ,
+                    priority : 16 ,
                 })
             },
         });

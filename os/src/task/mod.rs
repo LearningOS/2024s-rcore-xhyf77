@@ -17,7 +17,9 @@ mod context;
 mod id;
 mod manager;
 mod processor;
+pub use processor::PROCESSOR;
 mod switch;
+
 #[allow(clippy::module_inception)]
 #[allow(rustdoc::private_intra_doc_links)]
 mod task;
@@ -27,7 +29,6 @@ use alloc::sync::Arc;
 pub use context::TaskContext;
 use lazy_static::*;
 pub use manager::{fetch_task, TaskManager};
-use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
 
 pub use id::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
