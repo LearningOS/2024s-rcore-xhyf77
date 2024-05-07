@@ -235,24 +235,27 @@ pub fn sys_sbrk(size: i32) -> isize {
 }
 /// YOUR JOB: Implement spawn.
 /// HINT: fork + exec =/= spawn
-pub fn sys_spawn( path: *const u8) -> isize {
+pub fn sys_spawn(path: *const u8) -> isize {
+    trace!(
+        "kernel:pid[{}] sys_spawn",
+        current_task().unwrap().pid.0
+    );
     let token = current_user_token();
     let path = translated_str(token, path);
-    let fd = open_file(path.as_str(),OpenFlags::RDONLY );
-    if fd.is_none() {
-        println!("here");
-        return -1;
+    let current_task = current_task().unwrap();
+    let new_task = current_task.fork();
+
+    if let Some(app_inode) = open_file(path.as_str(), OpenFlags::RDONLY) {
+        let all_data = app_inode.read_all();
+        let new_pid = new_task.pid.0;
+        new_task.exec(all_data.as_slice());
+        let trap_cx = new_task.inner_exclusive_access().get_trap_cx();
+        trap_cx.x[10] = 0;
+        add_task(new_task);
+        return new_pid as isize
     }
-    let data = &fd.unwrap().read_all()[..];
-    
-    let childtask = Arc::new(TaskControlBlock::new(data));
-    let parenttask = current_task().unwrap();
-    let mut parent_inner = parenttask.inner_exclusive_access();
-    let mut child_inner = childtask.inner_exclusive_access();
-    child_inner.parent = Some(Arc::downgrade(&parenttask));
-    parent_inner.children.push(childtask.clone());
-    add_task(childtask.clone());
-    return  childtask.getpid() as isize;
+
+    -1
 }
 
 // YOUR JOB: Set task priority.
