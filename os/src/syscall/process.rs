@@ -1,11 +1,10 @@
 use crate::{
     config::MAX_SYSCALL_NUM,
     fs::{open_file, OpenFlags},
-    mm::{translated_ref, translated_refmut, translated_str},
+    mm::{translated_ref, translated_refmut, translated_str, PhysAddr, VirtAddr},
     task::{
-        current_process, current_task, current_user_token, exit_current_and_run_next, pid2process,
-        suspend_current_and_run_next, SignalFlags, TaskStatus,
-    },
+        current_process, current_task, current_user_token, exit_current_and_run_next, pid2process, ppn_by_vpn, suspend_current_and_run_next, SignalFlags, TaskStatus
+    }, timer::get_time_us,
 };
 use alloc::{string::String, sync::Arc, vec::Vec};
 
@@ -157,6 +156,18 @@ pub fn sys_kill(pid: usize, signal: u32) -> isize {
     }
 }
 
+pub fn va_to_pa(va: VirtAddr) -> Option<PhysAddr> {
+    let offset = va.page_offset();
+    let ppn = ppn_by_vpn(va.floor());
+    match ppn {
+        Some(ppn) => Some(PhysAddr::from((ppn.0 << 12) | offset)),
+        _ => {
+            error!("sys_get_time() failed");
+            None
+        }
+    }
+}
+
 /// get_time syscall
 ///
 /// YOUR JOB: get time with second and microsecond
@@ -167,7 +178,21 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
         "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
         current_task().unwrap().process.upgrade().unwrap().getpid()
     );
-    -1
+    let ts = va_to_pa(VirtAddr::from(_ts as usize));
+    if let Some(pa) = ts {
+        let us = get_time_us();
+        let ts = pa.0 as *mut TimeVal;
+        unsafe {
+            *ts = TimeVal {
+                sec: us / 1_000_000,
+                usec: us % 1_000_000,
+            };
+        }
+        0
+    } else {
+        error!("sys_get_time() failed");
+        -1
+    }
 }
 
 /// task_info syscall
